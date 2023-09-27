@@ -1,0 +1,84 @@
+name: Build Docker Image on Push
+
+on:
+  push:
+    branches:
+      - 'master'
+  
+  workflow_dispatch:
+
+jobs:
+  push_to_registry:
+    name: Push Docker image to Docker Hub
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@v1.0
+        with:
+          swap-size-gb: 10
+      - run: |
+          # Workaround for https://github.com/rust-lang/cargo/issues/8719
+          sudo mkdir -p /var/lib/docker
+          sudo mount -t tmpfs -o size=10G none /var/lib/docker
+          sudo systemctl restart docker
+
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout last commit minus one
+        run: |
+          COMMIT=$(git rev-list --all --skip=1 --max-count=1)
+          git checkout $COMMIT
+
+      - name: Set uwsgi buffer size
+        run: |
+          # Workaround for https://github.com/linuxserver/docker-healthchecks/issues/67
+          sed -i '/harakiri/ a buffer-size = 32768' docker/uwsgi.ini
+      
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          context: git
+          images: |
+            cloudptsd/healthchecks
+            ghcr.io/cloudptsd/healthchecks
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+            type=sha
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm/v7,linux/arm64/v8
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+permissions:
+  contents: write
+  packages: write
